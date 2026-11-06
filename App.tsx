@@ -1,7 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Alert,
   Image,
   Pressable,
@@ -120,6 +121,9 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
   const setTab = (next: Tab) => setTabState(next);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [splashFinished, setSplashFinished] = useState(false);
+  const [splashExitFinished, setSplashExitFinished] = useState(false);
+  const splashOpacity = useRef(new Animated.Value(0)).current;
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState('');
@@ -128,6 +132,7 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
   const [roomNumber, setRoomNumber] = useState('');
   const [hostel, setHostel] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [machineConfig, setMachineConfig] = useState(initialMachines);
   const [slotTimes, setSlotTimes] = useState<SlotTime[]>(DEFAULT_SLOT_TIMES);
   const [todayBookings, setTodayBookings] = useState<WashBooking[]>([]);
@@ -144,7 +149,8 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
   const [booked, setBooked] = useState(false);
   const [bookingBusy, setBookingBusy] = useState(false);
   const [bookingError, setBookingError] = useState('');
-  const [bookingFilter, setBookingFilter] = useState<'Upcoming' | 'Past'>('Upcoming');
+  const [bookingFilter, setBookingFilter] = useState<'Scheduled' | 'Completed' | 'Cancelled'>('Scheduled');
+  const [staffBookingFilter, setStaffBookingFilter] = useState<'Scheduled' | 'Completed' | 'Cancelled'>('Scheduled');
   const [selectingBookingsToClear, setSelectingBookingsToClear] = useState(false);
   const [selectedBookingIds, setSelectedBookingIds] = useState<string[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -175,6 +181,24 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
   }, []);
 
   useEffect(() => {
+    const timer = setTimeout(() => setSplashFinished(true), 1400);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const fadeIn = Animated.timing(splashOpacity, { toValue: 1, duration: 450, useNativeDriver: true });
+    fadeIn.start();
+    return () => fadeIn.stop();
+  }, [splashOpacity]);
+
+  useEffect(() => {
+    if (!authReady || !splashFinished) return;
+    const fadeOut = Animated.timing(splashOpacity, { toValue: 0, duration: 350, useNativeDriver: true });
+    fadeOut.start(({ finished }) => { if (finished) setSplashExitFinished(true); });
+    return () => fadeOut.stop();
+  }, [authReady, splashFinished, splashOpacity]);
+
+  useEffect(() => {
     if (!firebaseEnabled) {
       setAuthReady(true);
       return;
@@ -190,6 +214,13 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
       setAllBookings([]);
       setUsers([]);
       if (!firebaseUser) {
+        setStudentId('');
+        setPassword('');
+        setConfirmPassword('');
+        setFullName('');
+        setRoomNumber('');
+        setHostel('');
+        setAuthMode('login');
         setAuthReady(true);
         return;
       }
@@ -215,7 +246,7 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
     if (!profile || !firebaseEnabled) return;
     const stopMine = profile.role === 'STUDENT' ? observeUserBookings(profile.userId, setMyBookings, setDataError) : undefined;
     const stopMachines = observeMachineConfig(setMachineConfig, setDataError);
-    const stopAll = profile.role === 'ADMIN' ? observeAllBookings(setAllBookings, setDataError) : undefined;
+    const stopAll = profile.role !== 'STUDENT' ? observeAllBookings(setAllBookings, setDataError) : undefined;
     const stopUsers = profile.role === 'ADMIN' ? observeUsers(setUsers, setDataError) : undefined;
     const stopSlots = observeSlotTimes(setSlotTimes, setDataError);
     return () => { stopMine?.(); stopMachines(); stopAll?.(); stopUsers?.(); stopSlots(); };
@@ -363,6 +394,16 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
   const finishedBookings = myBookings.filter((booking) => ['DELIVERED', 'COMPLETED', 'CANCELLED'].includes(booking.status))
     .sort((a, b) => b.endAt - a.endAt);
   const trackedBooking = staffUpdatedBookings[0] ?? nextScheduledBooking ?? finishedBookings[0] ?? scheduledBookings[0];
+  const visibleStaffBookings = allBookings.filter((booking) => {
+    if (staffBookingFilter === 'Completed') return ['COMPLETED', 'DELIVERED'].includes(booking.status);
+    if (staffBookingFilter === 'Cancelled') return booking.status === 'CANCELLED';
+    return !['COMPLETED', 'DELIVERED', 'CANCELLED'].includes(booking.status);
+  });
+  const visibleTodayBookings = todayBookings.filter((booking) => {
+    if (staffBookingFilter === 'Completed') return ['COMPLETED', 'DELIVERED'].includes(booking.status);
+    if (staffBookingFilter === 'Cancelled') return booking.status === 'CANCELLED';
+    return !['COMPLETED', 'DELIVERED', 'CANCELLED'].includes(booking.status);
+  });
   const washStage = trackedBooking ? ({ BOOKED: 0, COLLECTED: 1, WASHING: 2, READY: 3, DELIVERED: 4, COMPLETED: 4, CANCELLED: -1 } as Record<BookingStatus, number>)[trackedBooking.status] : -1;
   const progress = washStage < 0 ? 0 : washStage * 25;
   const washStatusMessage = trackedBooking ? ({
@@ -375,10 +416,11 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
     CANCELLED: 'This booking was cancelled.',
   } as Record<BookingStatus, string>)[trackedBooking.status] : '';
   const visibleBookings = myBookings.filter((booking) => {
-    const past = booking.endAt > 0 ? booking.endAt <= clock : ['CANCELLED', 'COMPLETED', 'DELIVERED'].includes(booking.status);
-    return bookingFilter === 'Past' ? past : !past;
+    if (bookingFilter === 'Completed') return ['COMPLETED', 'DELIVERED'].includes(booking.status);
+    if (bookingFilter === 'Cancelled') return booking.status === 'CANCELLED';
+    return !['COMPLETED', 'DELIVERED', 'CANCELLED'].includes(booking.status);
   });
-  const clearableBookings = myBookings.filter((booking) => ['CANCELLED', 'COMPLETED', 'DELIVERED'].includes(booking.status));
+  const clearableBookings = visibleBookings.filter((booking) => ['CANCELLED', 'COMPLETED', 'DELIVERED'].includes(booking.status));
   const selectedBookingsToClear = clearableBookings.filter((booking) => selectedBookingIds.includes(booking.id));
   const dailyUsage = useMemo(() => Array.from({ length: 7 }, (_, index) => {
       const date = new Date(clock);
@@ -497,9 +539,22 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
   };
 
   const doRegister = async () => {
-    setAuthBusy(true); setAuthError('');
-    try { setProfile(await registerStudent({ userId: studentId, fullName, roomNumber, hostel, password })); }
-    catch (error) { setAuthError(error instanceof Error ? error.message : 'Could not create your account.'); }
+    setAuthError('');
+    if (password !== confirmPassword) { setAuthError('Passwords do not match.'); return; }
+    setAuthBusy(true);
+    try {
+      await registerStudent({ userId: studentId, fullName, roomNumber, hostel, password });
+      await logOut();
+      setProfile(null);
+      setAuthMode('login');
+      setStudentId('');
+      setPassword('');
+      setConfirmPassword('');
+      setFullName('');
+      setRoomNumber('');
+      setHostel('');
+      Alert.alert('Account created', 'Your account is ready. Please sign in with your user ID and password.');
+    } catch (error) { setAuthError(error instanceof Error ? error.message : 'Could not create your account.'); }
     finally { setAuthBusy(false); }
   };
 
@@ -530,7 +585,7 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
     }
   };
 
-  if (!authReady) return <SafeAreaView style={styles.safe}><View style={styles.loading}><ActivityIndicator color={palette.blue} /><Text style={styles.body}>Connecting to WashFlow…</Text></View></SafeAreaView>;
+  if (!authReady || !splashFinished || !splashExitFinished) return <SafeAreaView style={styles.splashScreen}><StatusBar style="dark" /><Animated.View style={[styles.splashContent, { opacity: splashOpacity, transform: [{ scale: splashOpacity.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }] }]}><Image source={require('./assets/icon.png')} style={styles.splashLogo} resizeMode="contain" /><Text style={styles.splashTitle}>WashFlow</Text><Text style={styles.splashTagline}>Hostel laundry, on your time.</Text></Animated.View></SafeAreaView>;
 
   if (!profile) return <AuthScreen
     mode={authMode}
@@ -542,13 +597,15 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
     roomNumber={roomNumber}
     hostel={hostel}
     password={password}
+    confirmPassword={confirmPassword}
     setStudentId={setStudentId}
     setFullName={setFullName}
     setRoomNumber={setRoomNumber}
     setHostel={setHostel}
     setPassword={setPassword}
+    setConfirmPassword={setConfirmPassword}
     onSubmit={authMode === 'login' ? doLogin : doRegister}
-    onToggle={() => { setAuthError(''); setAuthMode(authMode === 'login' ? 'register' : 'login'); }}
+    onToggle={() => { setAuthError(''); setConfirmPassword(''); setAuthMode(authMode === 'login' ? 'register' : 'login'); }}
   />;
 
   return (
@@ -580,7 +637,7 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
                 <Text style={styles.body}>{bookingMachine} · {dateLabel(new Date(`${selectedDate}T00:00:00`))}, {displayTime(selectedTime)}</Text>
                 <Text style={styles.body}>{cycle}</Text>
                 <View style={{ height: 20 }} />
-                <Button label="View my bookings" onPress={() => { setBookingMachine(null); setTab('Bookings'); }} />
+                <Pressable accessibilityRole="button" style={styles.confirmActionButton} onPress={() => { setBookingMachine(null); setTab('Bookings'); }}><Text style={styles.confirmActionButtonText}>View my bookings</Text></Pressable>
               </Card>
             ) : (
               <Card>
@@ -649,20 +706,21 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
           </>
         ) : tab === 'Bookings' && profile.role !== 'STUDENT' ? (
           <>
-            <Text style={styles.eyebrow}>{profile.role === 'ADMIN' ? 'ADMIN TOOLS' : 'LAUNDRY TEAM'}</Text><Text style={styles.title}>Today’s bookings</Text><Text style={styles.subtitle}>{dateLabel(new Date(`${todayKey}T00:00:00`))} · update wash statuses.</Text>
-            <Card style={{ marginBottom: 14 }}><Text style={styles.cardTitle}>{todayBookings.length} bookings today</Text></Card>
-            {todayBookings.length ? [...todayBookings].sort((a, b) => a.startAt - b.startAt).map((booking) => <Card key={booking.id} style={{ marginBottom: 12 }}><View style={styles.bookingCardTop}><View style={{ flex: 1 }}><Text style={styles.cardTitle}>{booking.machineId} · {booking.fullName || 'Student'}</Text><Text style={styles.body}>ID {booking.userId}{booking.roomNumber ? ` · Room ${booking.roomNumber}` : ''}</Text><Text style={styles.body}>{displayTime(booking.startTime)} – {displayTime(booking.endTime)} · {booking.cycle}</Text></View><Badge text={statusLabel(booking.status)} color={statusColor(booking.status)} background={statusBackground(booking.status)} /></View>{profile.role === 'STAFF' && !['CANCELLED', 'COMPLETED', 'DELIVERED'].includes(booking.status) && <View style={{ marginTop: 12 }}><Button label={nextStaffStatus(booking.status)} onPress={() => { const next = nextStaffStatusValue(booking.status); void updateWashStatus(booking, next).catch((error: unknown) => Alert.alert('Could not update status', error instanceof Error ? error.message : 'Try again.')); }} /></View>}</Card>) : <Card style={styles.emptyCard}><Text style={styles.cardTitle}>No bookings for today</Text><Text style={styles.body}>Today’s confirmed student bookings will appear here.</Text></Card>}
+            <Text style={styles.eyebrow}>{profile.role === 'ADMIN' ? 'ADMIN TOOLS' : 'LAUNDRY TEAM'}</Text><Text style={styles.title}>{profile.role === 'STAFF' ? 'All bookings' : 'Today’s bookings'}</Text><Text style={styles.subtitle}>{profile.role === 'STAFF' ? 'Student reservations across all dates.' : `${dateLabel(new Date(`${todayKey}T00:00:00`))} · review today’s schedule.`}</Text>
+            <View style={[styles.filterRow, { marginBottom: 12 }]}>{(['Scheduled', 'Completed', 'Cancelled'] as const).map((filter) => <Pill key={filter} text={filter} selected={staffBookingFilter === filter} onPress={() => setStaffBookingFilter(filter)} />)}</View>
+            <Card style={{ marginBottom: 14 }}><Text style={styles.cardTitle}>{profile.role === 'STAFF' ? `${visibleStaffBookings.length} ${staffBookingFilter.toLowerCase()} bookings` : `${visibleTodayBookings.length} ${staffBookingFilter.toLowerCase()} bookings today`}</Text></Card>
+            {(profile.role === 'STAFF' ? visibleStaffBookings : visibleTodayBookings).length ? [...(profile.role === 'STAFF' ? visibleStaffBookings : visibleTodayBookings)].sort((a, b) => a.startAt - b.startAt).map((booking) => <Card key={booking.id} style={{ marginBottom: 12 }}><View style={styles.bookingCardTop}><View style={{ flex: 1 }}><Text style={styles.cardTitle}>{booking.machineId} · {booking.fullName || 'Student'}</Text><Text style={styles.body}>ID {booking.userId}{booking.roomNumber ? ` · Room ${booking.roomNumber}` : ''}</Text><Text style={styles.body}>{dateLabel(new Date(`${booking.date}T00:00:00`))} · {displayTime(booking.startTime)} – {displayTime(booking.endTime)} · {booking.cycle}</Text></View><Badge text={statusLabel(booking.status)} color={statusColor(booking.status)} background={statusBackground(booking.status)} /></View>{profile.role === 'STAFF' && !['CANCELLED', 'COMPLETED', 'DELIVERED'].includes(booking.status) && <View style={{ marginTop: 12 }}><Button label={nextStaffStatus(booking.status)} onPress={() => { const next = nextStaffStatusValue(booking.status); void updateWashStatus(booking, next).catch((error: unknown) => Alert.alert('Could not update status', error instanceof Error ? error.message : 'Try again.')); }} /></View>}</Card>) : <Card style={styles.emptyCard}><Text style={styles.cardTitle}>{profile.role === 'STAFF' ? `No ${staffBookingFilter.toLowerCase()} bookings` : 'No bookings for today'}</Text><Text style={styles.body}>{profile.role === 'STAFF' ? `There are no ${staffBookingFilter.toLowerCase()} student bookings.` : 'Today’s confirmed student bookings will appear here.'}</Text></Card>}
           </>
         ) : tab === 'Bookings' ? (
           <>
             <Text style={styles.eyebrow}>YOUR LAUNDRY PLAN</Text><Text style={styles.title}>My bookings</Text><Text style={styles.subtitle}>Keep track of upcoming and past washes.</Text>
-            <View style={[styles.filterRow, { alignItems: 'center' }]}><Pill text="Upcoming" selected={bookingFilter === 'Upcoming'} onPress={() => setBookingFilter('Upcoming')} /><Pill text="Past" selected={bookingFilter === 'Past'} onPress={() => setBookingFilter('Past')} />{selectingBookingsToClear ? <Pressable onPress={() => { setSelectingBookingsToClear(false); setSelectedBookingIds([]); }} style={{ marginLeft: 'auto', paddingHorizontal: 10, paddingVertical: 8 }}><Text style={styles.link}>Cancel</Text></Pressable> : <Pressable disabled={!clearableBookings.length} onPress={() => { setSelectedBookingIds([]); setSelectingBookingsToClear(true); }} style={{ marginLeft: 'auto', paddingHorizontal: 10, paddingVertical: 8, opacity: clearableBookings.length ? 1 : 0.45 }}><Text style={styles.cancelText}>Clear</Text></Pressable>}</View>
+            <View style={[styles.filterRow, { alignItems: 'center' }]}>{(['Scheduled', 'Completed', 'Cancelled'] as const).map((filter) => <Pill key={filter} text={filter} selected={bookingFilter === filter} onPress={() => { setBookingFilter(filter); setSelectingBookingsToClear(false); setSelectedBookingIds([]); }} />)}{selectingBookingsToClear ? <Pressable onPress={() => { setSelectingBookingsToClear(false); setSelectedBookingIds([]); }} style={{ marginLeft: 'auto', paddingHorizontal: 10, paddingVertical: 8 }}><Text style={styles.link}>Cancel</Text></Pressable> : <Pressable disabled={!clearableBookings.length} onPress={() => { setSelectedBookingIds([]); setSelectingBookingsToClear(true); }} style={{ marginLeft: 'auto', paddingHorizontal: 10, paddingVertical: 8, opacity: clearableBookings.length ? 1 : 0.45 }}><Text style={styles.cancelText}>Clear</Text></Pressable>}</View>
             {selectingBookingsToClear && <Card style={{ marginTop: 12 }}><Text style={styles.cardTitle}>Select completed or cancelled bookings</Text><Text style={styles.body}>{selectedBookingsToClear.length} selected. Only selected bookings will be removed.</Text><View style={{ height: 10 }} /><Button label={`Clear selected (${selectedBookingsToClear.length})`} disabled={!selectedBookingsToClear.length} onPress={confirmClearBookings} /></Card>}
             {visibleBookings.length ? visibleBookings.map((booking) => {
               const canClear = ['CANCELLED', 'COMPLETED', 'DELIVERED'].includes(booking.status);
               const selected = selectedBookingIds.includes(booking.id);
-            return <Card key={booking.id} style={[{ marginTop: 12 }, selected && { borderColor: palette.blue, borderWidth: 2 }]}><View style={styles.bookingCardTop}><View style={styles.dateTile}><Text style={styles.dateMonth}>{new Date(`${booking.date}T00:00:00`).toLocaleDateString('en-US', { month: 'short' }).toUpperCase()}</Text><Text style={styles.dateDay}>{new Date(`${booking.date}T00:00:00`).getDate()}</Text></View><View style={{ flex: 1 }}><Text style={styles.cardTitle}>{booking.machineId || 'Laundry booking'}</Text><Text style={styles.body}>{dateLabel(new Date(`${booking.date}T00:00:00`))} · {displayTime(booking.startTime)}</Text></View><Badge text={statusLabel(booking.status)} color={statusColor(booking.status)} background={statusBackground(booking.status)} /></View><View style={styles.divider} /><View style={styles.bookingCardBottom}><Text style={styles.smallMuted}>{booking.cycle} · {booking.cycleMinutes} min</Text>{selectingBookingsToClear && canClear ? <Pressable onPress={() => toggleBookingForClear(booking.id)} style={styles.outlineButton}><Text style={styles.outlineButtonText}>{selected ? '✓ Selected' : 'Select'}</Text></Pressable> : bookingFilter === 'Upcoming' && booking.status === 'BOOKED' && <Pressable onPress={() => Alert.alert('Cancel booking?', 'Your reserved machine time will be released.', [{ text: 'Keep booking', style: 'cancel' }, { text: 'Cancel booking', style: 'destructive', onPress: () => { void cancelBooking(booking).catch((error: unknown) => Alert.alert('Could not cancel', error instanceof Error ? error.message : 'Try again.')); } }])}><Text style={styles.cancelText}>Cancel</Text></Pressable>}</View></Card>;
-            }) : <Card style={[styles.emptyCard, { marginTop: 16 }]}><Text style={styles.cardTitle}>Nothing here yet</Text><Text style={styles.body}>{bookingFilter === 'Upcoming' ? 'Your confirmed washes will show up here.' : 'Completed and cancelled washes will show up here.'}</Text></Card>}
+            return <Card key={booking.id} style={[{ marginTop: 12 }, selected && { borderColor: palette.blue, borderWidth: 2 }]}><View style={styles.bookingCardTop}><View style={styles.dateTile}><Text style={styles.dateMonth}>{new Date(`${booking.date}T00:00:00`).toLocaleDateString('en-US', { month: 'short' }).toUpperCase()}</Text><Text style={styles.dateDay}>{new Date(`${booking.date}T00:00:00`).getDate()}</Text></View><View style={{ flex: 1 }}><Text style={styles.cardTitle}>{booking.machineId || 'Laundry booking'}</Text><Text style={styles.body}>{dateLabel(new Date(`${booking.date}T00:00:00`))} · {displayTime(booking.startTime)}</Text></View><Badge text={statusLabel(booking.status)} color={statusColor(booking.status)} background={statusBackground(booking.status)} /></View><View style={styles.divider} /><View style={styles.bookingCardBottom}><Text style={styles.smallMuted}>{booking.cycle} · {booking.cycleMinutes} min</Text>{selectingBookingsToClear && canClear ? <Pressable onPress={() => toggleBookingForClear(booking.id)} style={styles.outlineButton}><Text style={styles.outlineButtonText}>{selected ? '✓ Selected' : 'Select'}</Text></Pressable> : bookingFilter === 'Scheduled' && booking.status === 'BOOKED' && <Pressable onPress={() => Alert.alert('Cancel booking?', 'Your reserved machine time will be released.', [{ text: 'Keep booking', style: 'cancel' }, { text: 'Cancel booking', style: 'destructive', onPress: () => { void cancelBooking(booking).catch((error: unknown) => Alert.alert('Could not cancel', error instanceof Error ? error.message : 'Try again.')); } }])}><Text style={styles.cancelText}>Cancel</Text></Pressable>}</View></Card>;
+            }) : <Card style={[styles.emptyCard, { marginTop: 16 }]}><Text style={styles.cardTitle}>Nothing here yet</Text><Text style={styles.body}>{bookingFilter === 'Scheduled' ? 'Your scheduled washes will show up here.' : `No ${bookingFilter.toLowerCase()} washes to show.`}</Text></Card>}
             <View style={styles.tipBox}><Text style={styles.tipIcon}>✦</Text><Text style={styles.body}>We’ll remind you 15 minutes before your wash starts.</Text></View>
           </>
         ) : tab === 'Activity' ? (
@@ -764,19 +822,20 @@ function nextStaffStatus(status: BookingStatus) {
 
 function AuthScreen(props: {
   mode: 'login' | 'register'; busy: boolean; error: string; configured: boolean;
-  studentId: string; fullName: string; roomNumber: string; hostel: string; password: string;
+  studentId: string; fullName: string; roomNumber: string; hostel: string; password: string; confirmPassword: string;
   setStudentId: (value: string) => void; setFullName: (value: string) => void;
   setRoomNumber: (value: string) => void; setHostel: (value: string) => void;
-  setPassword: (value: string) => void; onSubmit: () => void; onToggle: () => void;
+  setPassword: (value: string) => void; setConfirmPassword: (value: string) => void; onSubmit: () => void; onToggle: () => void;
 }) {
   const register = props.mode === 'register';
   return <SafeAreaView style={styles.safe}><StatusBar style="dark" /><ScrollView contentContainerStyle={styles.authPage} keyboardShouldPersistTaps="handled">
-    <View style={styles.authMark}><Text style={styles.authMarkText}>◌</Text></View><Text style={styles.brand}>WashFlow</Text><Text style={styles.authTagline}>Hostel laundry, on your time.</Text>
+    <Image source={require('./assets/icon.png')} style={styles.authMark} resizeMode="contain" /><Text style={[styles.brand, styles.authBrand]}>WashFlow</Text><Text style={styles.authTagline}>Hostel laundry, on your time.</Text>
     <Card style={styles.authCard}><Text style={styles.title}>{register ? 'Create account' : 'Welcome back'}</Text><Text style={styles.subtitle}>{register ? 'Set up your student profile to book a wash.' : 'Sign in to view machines and manage your washes.'}</Text>
       {!props.configured ? <Text style={styles.errorText}>Firebase is not configured. Add the project settings to .env.local and restart Expo.</Text> : null}
       {register ? <><AuthInput label="FULL NAME" placeholder="Your name" value={props.fullName} onChangeText={props.setFullName} /><AuthInput label="ROOM NUMBER" placeholder="e.g. 204" value={props.roomNumber} onChangeText={props.setRoomNumber} /><HostelPicker label="HOSTEL" value={props.hostel} onChange={props.setHostel} /></> : null}
       <AuthInput label={register ? 'CST STUDENT EMAIL' : 'USER ID'} placeholder={register ? '02230127.cst@rub.edu.bt' : 'StdID'} value={props.studentId} onChangeText={props.setStudentId} autoCapitalize="none" />
       <AuthInput label="PASSWORD" placeholder="At least 6 characters" value={props.password} onChangeText={props.setPassword} secureTextEntry />
+      {register && <AuthInput label="CONFIRM PASSWORD" placeholder="Re-enter your password" value={props.confirmPassword} onChangeText={props.setConfirmPassword} secureTextEntry />}
       {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
       <Button label={props.busy ? 'Please wait…' : register ? 'Create student account' : 'Sign in'} disabled={props.busy || !props.configured} onPress={props.onSubmit} />
       <Pressable style={styles.authToggle} onPress={props.onToggle}><Text style={styles.body}>{register ? 'Already have an account? ' : 'New to WashFlow? '}<Text style={styles.link}>{register ? 'Sign in' : 'Create an account'}</Text></Text></Pressable>
@@ -802,6 +861,11 @@ function HostelPicker(props: { label: string; value: string; onChange: (value: s
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: palette.background },
+  splashScreen: { flex: 1, backgroundColor: '#F7FAFF', alignItems: 'center', justifyContent: 'center' },
+  splashContent: { alignItems: 'center', justifyContent: 'center' },
+  splashLogo: { width: 116, height: 116, marginBottom: 16 },
+  splashTitle: { color: palette.ink, fontSize: 27, fontWeight: '800', letterSpacing: -0.6 },
+  splashTagline: { color: palette.muted, fontSize: 14, marginTop: 7 },
   topbar: { height: 66, paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', backgroundColor: palette.surface, borderBottomWidth: 1, borderBottomColor: palette.line, gap: 11 },
   brandMark: { width: 42, height: 42, borderRadius: 13, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }, brandImage: { width: 42, height: 42 },
   brand: { color: palette.ink, fontSize: 17, fontWeight: '800', letterSpacing: -0.3 }, brandSub: { color: palette.muted, fontSize: 9, letterSpacing: 1.3, marginTop: 1, fontWeight: '700' },
@@ -815,9 +879,11 @@ const styles = StyleSheet.create({
   tabBar: { height: 68, borderTopWidth: 1, borderTopColor: palette.line, backgroundColor: palette.surface, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingBottom: 3 }, tabButton: { alignItems: 'center', justifyContent: 'center', minWidth: 55 }, tabIcon: { color: '#94A3B8', fontSize: 20, height: 24 }, tabIconActive: { color: palette.blue }, tabLabel: { color: '#94A3B8', fontSize: 9, fontWeight: '600', marginTop: 1 }, tabLabelActive: { color: palette.blue, fontWeight: '800' },
   eyebrow: { color: palette.blue, fontSize: 10, fontWeight: '800', letterSpacing: 1.25, marginTop: 4 }, title: { color: palette.ink, fontSize: 28, fontWeight: '800', letterSpacing: -0.7, marginTop: 5 }, subtitle: { color: palette.muted, fontSize: 13, lineHeight: 19, marginTop: 5, marginBottom: 16 }, searchBox: { height: 48, borderWidth: 1, borderColor: palette.line, backgroundColor: palette.surface, borderRadius: 13, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 13, gap: 9 }, searchInput: { flex: 1, color: palette.ink, fontSize: 13, paddingVertical: 8 }, filterRow: { flexDirection: 'row', gap: 8, marginTop: 13 }, pill: { borderWidth: 1, borderColor: palette.line, borderRadius: 20, paddingHorizontal: 13, paddingVertical: 8, backgroundColor: palette.surface }, pillSelected: { borderColor: palette.blue, backgroundColor: palette.softBlue }, pillText: { color: palette.muted, fontSize: 11, fontWeight: '700' }, pillTextSelected: { color: palette.blue },
   backLink: { marginBottom: 18, paddingVertical: 3 }, backText: { color: palette.blue, fontSize: 13, fontWeight: '700' }, label: { color: palette.muted, fontSize: 10, fontWeight: '800', letterSpacing: 1 }, fieldValue: { color: palette.ink, fontSize: 14, fontWeight: '700', marginTop: 9 }, chipRow: { flexDirection: 'row', gap: 7, marginTop: 10 }, cycleRow: { gap: 8, marginTop: 10 }, cycleOption: { borderWidth: 1, borderColor: palette.line, borderRadius: 11, padding: 12 }, cycleSelected: { backgroundColor: palette.softBlue, borderColor: palette.blue }, cycleText: { color: palette.ink, fontSize: 12, fontWeight: '700' }, button: { backgroundColor: palette.blue, borderRadius: 13, minHeight: 48, justifyContent: 'center', alignItems: 'center' }, buttonText: { color: 'white', fontWeight: '800', fontSize: 14 }, helper: { color: palette.muted, fontSize: 11, textAlign: 'center', marginTop: 10 }, confirmCard: { alignItems: 'center', paddingVertical: 26, marginTop: 8 }, confirmIcon: { width: 56, height: 56, backgroundColor: '#E7F7F1', borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginBottom: 13 },
+  confirmActionButton: { alignSelf: 'stretch', minHeight: 56, marginTop: 2, paddingHorizontal: 18, borderRadius: 14, backgroundColor: palette.blue, alignItems: 'center', justifyContent: 'center' },
+  confirmActionButtonText: { color: 'white', fontSize: 16, fontWeight: '800', letterSpacing: 0.15 },
   tipBox: { flexDirection: 'row', gap: 10, alignItems: 'center', backgroundColor: palette.softBlue, borderRadius: 14, padding: 13, marginTop: 16 }, tipIcon: { color: palette.blue, fontWeight: '900' }, cancelText: { color: palette.red, fontSize: 12, fontWeight: '800' }, activityCard: { marginTop: 8, marginBottom: 20 }, activityHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 7 }, progressTrack: { height: 8, backgroundColor: '#E9EEF6', borderRadius: 9, overflow: 'hidden', marginTop: 20, marginBottom: 11 }, progressFill: { height: '100%', backgroundColor: palette.cyan, borderRadius: 9 }, stepRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 }, stepDot: { width: 29, height: 29, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }, stepDone: { backgroundColor: '#E7F7F1' }, stepCurrent: { backgroundColor: palette.softBlue }, stepMark: { color: palette.green, fontSize: 11, fontWeight: '800' }, profileRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 15 }, profileItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 13 }, bodyStrong: { color: palette.ink, fontSize: 13, fontWeight: '700' }, chevron: { color: '#94A3B8', fontSize: 21 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 }, emptyCard: { marginTop: 4 }, errorText: { color: palette.red, backgroundColor: '#FEF2F2', borderRadius: 11, padding: 11, fontSize: 12, lineHeight: 18, marginVertical: 10 }, dataBanner: { color: palette.red, backgroundColor: '#FEF2F2', paddingHorizontal: 16, paddingVertical: 8, fontSize: 11 },
   manageRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line, borderRadius: 15, padding: 13, marginTop: 9 }, outlineButton: { borderWidth: 1, borderColor: palette.blue, borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8 }, outlineButtonText: { color: palette.blue, fontSize: 10, fontWeight: '800' }, reportTrack: { flex: 1, height: 10, backgroundColor: '#E9EEF6', borderRadius: 8, overflow: 'hidden' }, reportBar: { height: '100%', backgroundColor: palette.blue, borderRadius: 8 },
   buttonDisabled: { opacity: 0.45 }, pillDisabled: { backgroundColor: '#F1F5F9', borderColor: '#E2E8F0' }, pillTextDisabled: { color: '#94A3B8' },
-  authPage: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingVertical: 40 }, authMark: { width: 56, height: 56, backgroundColor: palette.blue, borderRadius: 18, alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginBottom: 13 }, authMarkText: { color: 'white', fontSize: 33, fontWeight: '800' }, authTagline: { color: palette.muted, fontSize: 13, textAlign: 'center', marginTop: 5, marginBottom: 24 }, authCard: { padding: 20 }, authInputGroup: { marginTop: 15 }, authInput: { height: 48, borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 8, paddingHorizontal: 13, color: palette.ink, fontSize: 14, backgroundColor: '#FCFDFE' }, hostelPicker: { height: 48, borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 8, paddingHorizontal: 13, backgroundColor: '#FCFDFE', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, hostelPickerText: { color: palette.ink, fontSize: 14, fontWeight: '600' }, hostelPlaceholder: { color: '#94A3B8', fontWeight: '400' }, hostelChevron: { color: palette.muted, fontSize: 20 }, hostelOptions: { borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 6, overflow: 'hidden', backgroundColor: palette.surface }, hostelOption: { minHeight: 42, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: palette.line }, hostelOptionSelected: { backgroundColor: palette.softBlue }, hostelOptionTextSelected: { color: palette.blue }, authToggle: { alignItems: 'center', marginTop: 18 }, authFootnote: { color: palette.muted, textAlign: 'center', fontSize: 11, marginTop: 17 },
+  authPage: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingVertical: 40 }, authMark: { width: 76, height: 76, alignSelf: 'center', marginBottom: 13 }, authBrand: { alignSelf: 'center', textAlign: 'center' }, authTagline: { color: palette.muted, fontSize: 13, textAlign: 'center', marginTop: 5, marginBottom: 24 }, authCard: { padding: 20 }, authInputGroup: { marginTop: 15 }, authInput: { height: 48, borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 8, paddingHorizontal: 13, color: palette.ink, fontSize: 14, backgroundColor: '#FCFDFE' }, hostelPicker: { height: 48, borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 8, paddingHorizontal: 13, backgroundColor: '#FCFDFE', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, hostelPickerText: { color: palette.ink, fontSize: 14, fontWeight: '600' }, hostelPlaceholder: { color: '#94A3B8', fontWeight: '400' }, hostelChevron: { color: palette.muted, fontSize: 20 }, hostelOptions: { borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 6, overflow: 'hidden', backgroundColor: palette.surface }, hostelOption: { minHeight: 42, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: palette.line }, hostelOptionSelected: { backgroundColor: palette.softBlue }, hostelOptionTextSelected: { color: palette.blue }, authToggle: { alignItems: 'center', marginTop: 18 }, authFootnote: { color: palette.muted, textAlign: 'center', fontSize: 11, marginTop: 17 },
 });

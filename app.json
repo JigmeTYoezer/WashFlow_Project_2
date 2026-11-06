@@ -5,6 +5,9 @@
     "scheme": "washflow",
     "version": "1.0.0",
     "orientation": "portrait",
+    "experiments": {
+      "onDemandFilesystem": false
+    },
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
