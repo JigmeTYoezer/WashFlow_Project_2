@@ -22,7 +22,6 @@ import {
   setDoc,
   updateDoc,
   where,
-  writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
 import { auth, db, firebaseEnabled, getProvisioningAuth } from './firebase';
@@ -136,6 +135,7 @@ export async function registerStudent(input: {
     return profile;
   } catch (error) {
     if (createdUser) await deleteUser(createdUser).catch(() => undefined);
+    await signOut(firebaseAuth).catch(() => undefined);
     throw new Error(cleanError(error));
   }
 }
@@ -391,19 +391,20 @@ export async function renameMachine(machine: MachineInfo, nextId: string) {
   const id = nextId.trim().replace(/\s+/g, ' ');
   if (!id) throw new Error('Enter a machine name.');
   if (id.toLowerCase() === machine.id.toLowerCase()) return;
-  if (MACHINE_LIST.some((candidate) => candidate.id.toLowerCase() === id.toLowerCase())) {
-    throw new Error('A machine with that name already exists.');
-  }
   const { firestore } = await requireAdmin();
   const oldRef = doc(firestore, BOOKING_COLLECTION, machineConfigId(machine.id));
   const newRef = doc(firestore, BOOKING_COLLECTION, machineConfigId(id));
   try {
-    const existing = await getDoc(newRef);
-    if (existing.exists() && existing.data().removed !== true) throw new Error('A machine with that name already exists.');
-    const batch = writeBatch(firestore);
-    batch.set(oldRef, { kind: 'machine-config', machineId: machine.id, status: machine.status, removed: true, updatedAt: Date.now() });
-    batch.set(newRef, { kind: 'machine-config', machineId: id, status: machine.status, removed: false, updatedAt: Date.now() });
-    await batch.commit();
+    await runTransaction(firestore, async (transaction) => {
+      const existing = await transaction.get(newRef);
+      const isBuiltIn = MACHINE_LIST.some((candidate) => candidate.id.toLowerCase() === id.toLowerCase());
+      const isActiveBuiltIn = isBuiltIn && !existing.exists();
+      if ((existing.exists() && existing.data().removed !== true) || isActiveBuiltIn) {
+        throw new Error('A machine with that name already exists.');
+      }
+      transaction.set(oldRef, { kind: 'machine-config', machineId: machine.id, status: machine.status, removed: true, updatedAt: Date.now() });
+      transaction.set(newRef, { kind: 'machine-config', machineId: id, ...(machine.floor ? { floor: machine.floor } : {}), status: machine.status, removed: false, updatedAt: Date.now() });
+    });
   } catch (error) {
     throw new Error(cleanError(error));
   }

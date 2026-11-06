@@ -5,6 +5,8 @@ import {
   Animated,
   Alert,
   Image,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -127,6 +129,7 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState('');
+  const registrationInProgress = useRef(false);
   const [studentId, setStudentId] = useState('');
   const [fullName, setFullName] = useState('');
   const [roomNumber, setRoomNumber] = useState('');
@@ -159,8 +162,9 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
   const [newManagedUserName, setNewManagedUserName] = useState('');
   const [newManagedUserPassword, setNewManagedUserPassword] = useState('');
   const [adminActionBusy, setAdminActionBusy] = useState(false);
-  const [slotStart, setSlotStart] = useState('');
-  const [slotEnd, setSlotEnd] = useState('');
+  const [slotStartHour, setSlotStartHour] = useState('');
+  const [slotPeriod, setSlotPeriod] = useState<'AM' | 'PM'>('PM');
+  const [slotEndHour, setSlotEndHour] = useState('');
   const [editingMachineId, setEditingMachineId] = useState<string | null>(null);
   const [editedMachineName, setEditedMachineName] = useState('');
   const [profileName, setProfileName] = useState('');
@@ -205,6 +209,10 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
     }
     let authRequest = 0;
     const stopObserving = observeAuth((firebaseUser) => {
+      if (registrationInProgress.current) {
+        setAuthReady(true);
+        return;
+      }
       const requestId = ++authRequest;
       setAuthReady(false);
       setProfile(null);
@@ -489,11 +497,18 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
   };
 
   const handleAddSlotTime = async () => {
+    const to24HourTime = (hourText: string, period: 'AM' | 'PM') => {
+      if (!/^\d{1,2}$/.test(hourText.trim())) throw new Error('Enter a start and end hour from 1 to 12.');
+      const hour = Number(hourText);
+      if (hour < 1 || hour > 12) throw new Error('Hours must be between 1 and 12.');
+      const hour24 = period === 'AM' ? hour % 12 : (hour % 12) + 12;
+      return `${String(hour24).padStart(2, '0')}:00`;
+    };
     setAdminActionBusy(true);
     try {
-      await addSlotTime(slotStart, slotEnd);
-      setSlotStart('');
-      setSlotEnd('');
+      await addSlotTime(to24HourTime(slotStartHour, slotPeriod), to24HourTime(slotEndHour, slotPeriod));
+      setSlotStartHour('');
+      setSlotEndHour('');
     } catch (error) {
       Alert.alert('Could not save time slot', error instanceof Error ? error.message : 'Try again.');
     } finally {
@@ -542,6 +557,7 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
     setAuthError('');
     if (password !== confirmPassword) { setAuthError('Passwords do not match.'); return; }
     setAuthBusy(true);
+    registrationInProgress.current = true;
     try {
       await registerStudent({ userId: studentId, fullName, roomNumber, hostel, password });
       await logOut();
@@ -555,7 +571,7 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
       setHostel('');
       Alert.alert('Account created', 'Your account is ready. Please sign in with your user ID and password.');
     } catch (error) { setAuthError(error instanceof Error ? error.message : 'Could not create your account.'); }
-    finally { setAuthBusy(false); }
+    finally { registrationInProgress.current = false; setAuthBusy(false); }
   };
 
   const saveProfile = async () => {
@@ -692,7 +708,7 @@ export default function App({ initialTab = 'Home' }: { initialTab?: Tab }) {
               {profile.role === 'ADMIN' && editingMachineId === machine.id && <Card style={{ marginTop: 8 }}><Text style={styles.cardTitle}>Edit machine name</Text><TextInput style={styles.authInput} value={editedMachineName} onChangeText={setEditedMachineName} placeholder="Machine name" /><View style={{ height: 10 }} /><Button label={adminActionBusy ? 'Saving…' : 'Save name'} disabled={adminActionBusy} onPress={() => { void handleRenameMachine(machine); }} /><Pressable style={styles.authToggle} onPress={() => setEditingMachineId(null)}><Text style={styles.link}>Cancel</Text></Pressable></Card>}
             </View>)}
             {!machineConfig.length && <Card style={styles.emptyCard}><Text style={styles.body}>No machines have been added.</Text></Card>}
-            {profile.role === 'ADMIN' && <Card style={{ marginTop: 22 }}><Text style={styles.cardTitle}>Custom time slots</Text><Text style={styles.body}>Each custom slot is one hour and is added alongside the weekday and weekend schedule. Times use 24-hour format.</Text><View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}><TextInput style={[styles.authInput, { flex: 1 }]} placeholder="Start, e.g. 14:00" placeholderTextColor="#94A3B8" value={slotStart} onChangeText={setSlotStart} /><TextInput style={[styles.authInput, { flex: 1 }]} placeholder="End, e.g. 15:00" placeholderTextColor="#94A3B8" value={slotEnd} onChangeText={setSlotEnd} /></View><View style={{ height: 10 }} /><Button label={adminActionBusy ? 'Saving…' : 'Save custom slot'} disabled={adminActionBusy} onPress={() => { void handleAddSlotTime(); }} />
+            {profile.role === 'ADMIN' && <Card style={{ marginTop: 22 }}><Text style={styles.cardTitle}>Custom time slots</Text><Text style={styles.body}>Add a one-hour slot alongside the weekday and weekend schedule.</Text><Text style={[styles.label, { marginTop: 12 }]}>START TIME</Text><View style={styles.customTimeRow}><TextInput style={[styles.authInput, styles.hourInput]} placeholder="Hour" placeholderTextColor="#94A3B8" value={slotStartHour} onChangeText={setSlotStartHour} keyboardType="number-pad" maxLength={2} /></View><Text style={[styles.label, { marginTop: 12 }]}>END TIME</Text><View style={styles.customTimeRow}><TextInput style={[styles.authInput, styles.hourInput]} placeholder="Hour" placeholderTextColor="#94A3B8" value={slotEndHour} onChangeText={setSlotEndHour} keyboardType="number-pad" maxLength={2} /></View><Text style={[styles.label, { marginTop: 12 }]}>PERIOD (APPLIES TO BOTH TIMES)</Text><View style={styles.customTimeRow}><TimePeriodPicker value={slotPeriod} onChange={setSlotPeriod} /></View><View style={{ height: 10 }} /><Button label={adminActionBusy ? 'Saving…' : 'Save custom slot'} disabled={adminActionBusy} onPress={() => { void handleAddSlotTime(); }} />
               {slotTimes.map((slot) => <View key={slot.start} style={styles.manageRow}><Text style={[styles.cardTitle, { flex: 1 }]}>{displayTime(slot.start)} – {displayTime(slot.end)}</Text><Pressable onPress={() => Alert.alert('Remove time slot?', `${displayTime(slot.start)} will no longer be bookable.`, [{ text: 'Keep', style: 'cancel' }, { text: 'Remove', style: 'destructive', onPress: () => { void removeSlotTime(slot).catch((error: unknown) => Alert.alert('Could not remove time', error instanceof Error ? error.message : 'Try again.')); } }])} style={[styles.outlineButton, { borderColor: palette.red }]}><Text style={styles.cancelText}>Remove</Text></Pressable></View>)}
             </Card>}
           </>
@@ -794,7 +810,8 @@ function statusLabel(status: BookingStatus) {
   if (status === 'COLLECTED') return 'Collected';
   if (status === 'WASHING') return 'Washing';
   if (status === 'READY') return 'Ready';
-  if (status === 'DELIVERED' || status === 'COMPLETED') return 'Completed';
+  if (status === 'DELIVERED') return 'Delivered';
+  if (status === 'COMPLETED') return 'Completed';
   return 'Cancelled';
 }
 function statusColor(status: BookingStatus) {
@@ -828,23 +845,27 @@ function AuthScreen(props: {
   setPassword: (value: string) => void; setConfirmPassword: (value: string) => void; onSubmit: () => void; onToggle: () => void;
 }) {
   const register = props.mode === 'register';
-  return <SafeAreaView style={styles.safe}><StatusBar style="dark" /><ScrollView contentContainerStyle={styles.authPage} keyboardShouldPersistTaps="handled">
+  return <SafeAreaView style={styles.safe}><StatusBar style="dark" /><KeyboardAvoidingView style={styles.authKeyboard} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}><ScrollView contentContainerStyle={styles.authPage} keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}>
     <Image source={require('./assets/icon.png')} style={styles.authMark} resizeMode="contain" /><Text style={[styles.brand, styles.authBrand]}>WashFlow</Text><Text style={styles.authTagline}>Hostel laundry, on your time.</Text>
     <Card style={styles.authCard}><Text style={styles.title}>{register ? 'Create account' : 'Welcome back'}</Text><Text style={styles.subtitle}>{register ? 'Set up your student profile to book a wash.' : 'Sign in to view machines and manage your washes.'}</Text>
       {!props.configured ? <Text style={styles.errorText}>Firebase is not configured. Add the project settings to .env.local and restart Expo.</Text> : null}
-      {register ? <><AuthInput label="FULL NAME" placeholder="Your name" value={props.fullName} onChangeText={props.setFullName} /><AuthInput label="ROOM NUMBER" placeholder="e.g. 204" value={props.roomNumber} onChangeText={props.setRoomNumber} /><HostelPicker label="HOSTEL" value={props.hostel} onChange={props.setHostel} /></> : null}
-      <AuthInput label={register ? 'CST STUDENT EMAIL' : 'USER ID'} placeholder={register ? '02230127.cst@rub.edu.bt' : 'StdID'} value={props.studentId} onChangeText={props.setStudentId} autoCapitalize="none" />
+      {register ? <><AuthInput label="FULL NAME" placeholder="Your name" value={props.fullName} onChangeText={props.setFullName} /><AuthInput label="ROOM NUMBER" placeholder="e.g. 204" value={props.roomNumber} onChangeText={props.setRoomNumber} keyboardType="number-pad" /><HostelPicker label="HOSTEL" value={props.hostel} onChange={props.setHostel} /></> : null}
+      <AuthInput label={register ? 'CST STUDENT EMAIL' : 'USER ID'} placeholder={register ? '02230127.cst@rub.edu.bt' : 'StdID'} value={props.studentId} onChangeText={props.setStudentId} autoCapitalize="none" keyboardType={register ? 'email-address' : 'default'} />
       <AuthInput label="PASSWORD" placeholder="At least 6 characters" value={props.password} onChangeText={props.setPassword} secureTextEntry />
       {register && <AuthInput label="CONFIRM PASSWORD" placeholder="Re-enter your password" value={props.confirmPassword} onChangeText={props.setConfirmPassword} secureTextEntry />}
       {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
       <Button label={props.busy ? 'Please wait…' : register ? 'Create student account' : 'Sign in'} disabled={props.busy || !props.configured} onPress={props.onSubmit} />
       <Pressable style={styles.authToggle} onPress={props.onToggle}><Text style={styles.body}>{register ? 'Already have an account? ' : 'New to WashFlow? '}<Text style={styles.link}>{register ? 'Sign in' : 'Create an account'}</Text></Text></Pressable>
     </Card><Text style={styles.authFootnote}>Your account is secured by Firebase Authentication.</Text>
-  </ScrollView></SafeAreaView>;
+  </ScrollView></KeyboardAvoidingView></SafeAreaView>;
 }
 
-function AuthInput(props: { label: string; placeholder: string; value: string; onChangeText: (value: string) => void; secureTextEntry?: boolean; autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters' }) {
-  return <View style={styles.authInputGroup}><Text style={styles.label}>{props.label}</Text><TextInput style={styles.authInput} placeholder={props.placeholder} placeholderTextColor="#94A3B8" value={props.value} onChangeText={props.onChangeText} secureTextEntry={props.secureTextEntry} autoCapitalize={props.autoCapitalize ?? (props.secureTextEntry ? 'none' : 'words')} autoCorrect={false} /></View>;
+function AuthInput(props: { label: string; placeholder: string; value: string; onChangeText: (value: string) => void; secureTextEntry?: boolean; autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters'; keyboardType?: 'default' | 'email-address' | 'number-pad' }) {
+  return <View style={styles.authInputGroup}><Text style={styles.label}>{props.label}</Text><TextInput style={styles.authInput} placeholder={props.placeholder} placeholderTextColor="#94A3B8" value={props.value} onChangeText={props.onChangeText} secureTextEntry={props.secureTextEntry} autoCapitalize={props.autoCapitalize ?? (props.secureTextEntry ? 'none' : 'words')} autoCorrect={false} keyboardType={props.keyboardType ?? 'default'} /></View>;
+}
+
+function TimePeriodPicker(props: { value: 'AM' | 'PM'; onChange: (value: 'AM' | 'PM') => void }) {
+  return <View style={styles.periodPicker}>{(['AM', 'PM'] as const).map((period) => <Pressable key={period} accessibilityRole="button" accessibilityState={{ selected: props.value === period }} onPress={() => props.onChange(period)} style={[styles.periodOption, props.value === period && styles.periodOptionSelected]}><Text style={[styles.periodText, props.value === period && styles.periodTextSelected]}>{period}</Text></Pressable>)}</View>;
 }
 
 function HostelPicker(props: { label: string; value: string; onChange: (value: string) => void }) {
@@ -885,5 +906,5 @@ const styles = StyleSheet.create({
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 }, emptyCard: { marginTop: 4 }, errorText: { color: palette.red, backgroundColor: '#FEF2F2', borderRadius: 11, padding: 11, fontSize: 12, lineHeight: 18, marginVertical: 10 }, dataBanner: { color: palette.red, backgroundColor: '#FEF2F2', paddingHorizontal: 16, paddingVertical: 8, fontSize: 11 },
   manageRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line, borderRadius: 15, padding: 13, marginTop: 9 }, outlineButton: { borderWidth: 1, borderColor: palette.blue, borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8 }, outlineButtonText: { color: palette.blue, fontSize: 10, fontWeight: '800' }, reportTrack: { flex: 1, height: 10, backgroundColor: '#E9EEF6', borderRadius: 8, overflow: 'hidden' }, reportBar: { height: '100%', backgroundColor: palette.blue, borderRadius: 8 },
   buttonDisabled: { opacity: 0.45 }, pillDisabled: { backgroundColor: '#F1F5F9', borderColor: '#E2E8F0' }, pillTextDisabled: { color: '#94A3B8' },
-  authPage: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingVertical: 40 }, authMark: { width: 76, height: 76, alignSelf: 'center', marginBottom: 13 }, authBrand: { alignSelf: 'center', textAlign: 'center' }, authTagline: { color: palette.muted, fontSize: 13, textAlign: 'center', marginTop: 5, marginBottom: 24 }, authCard: { padding: 20 }, authInputGroup: { marginTop: 15 }, authInput: { height: 48, borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 8, paddingHorizontal: 13, color: palette.ink, fontSize: 14, backgroundColor: '#FCFDFE' }, hostelPicker: { height: 48, borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 8, paddingHorizontal: 13, backgroundColor: '#FCFDFE', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, hostelPickerText: { color: palette.ink, fontSize: 14, fontWeight: '600' }, hostelPlaceholder: { color: '#94A3B8', fontWeight: '400' }, hostelChevron: { color: palette.muted, fontSize: 20 }, hostelOptions: { borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 6, overflow: 'hidden', backgroundColor: palette.surface }, hostelOption: { minHeight: 42, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: palette.line }, hostelOptionSelected: { backgroundColor: palette.softBlue }, hostelOptionTextSelected: { color: palette.blue }, authToggle: { alignItems: 'center', marginTop: 18 }, authFootnote: { color: palette.muted, textAlign: 'center', fontSize: 11, marginTop: 17 },
+  customTimeRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 5 }, hourInput: { width: 96, textAlign: 'center', marginTop: 0 }, periodPicker: { flexDirection: 'row', borderWidth: 1, borderColor: palette.line, borderRadius: 11, padding: 3, backgroundColor: '#FCFDFE' }, periodOption: { minWidth: 54, height: 40, borderRadius: 8, alignItems: 'center', justifyContent: 'center' }, periodOptionSelected: { backgroundColor: palette.blue }, periodText: { color: palette.muted, fontWeight: '800', fontSize: 13 }, periodTextSelected: { color: 'white' }, authKeyboard: { flex: 1 }, authPage: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingVertical: 40 }, authMark: { width: 76, height: 76, alignSelf: 'center', marginBottom: 13 }, authBrand: { alignSelf: 'center', textAlign: 'center' }, authTagline: { color: palette.muted, fontSize: 13, textAlign: 'center', marginTop: 5, marginBottom: 24 }, authCard: { padding: 20 }, authInputGroup: { marginTop: 15 }, authInput: { height: 48, borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 8, paddingHorizontal: 13, color: palette.ink, fontSize: 14, backgroundColor: '#FCFDFE' }, hostelPicker: { height: 48, borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 8, paddingHorizontal: 13, backgroundColor: '#FCFDFE', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, hostelPickerText: { color: palette.ink, fontSize: 14, fontWeight: '600' }, hostelPlaceholder: { color: '#94A3B8', fontWeight: '400' }, hostelChevron: { color: palette.muted, fontSize: 20 }, hostelOptions: { borderWidth: 1, borderColor: palette.line, borderRadius: 12, marginTop: 6, overflow: 'hidden', backgroundColor: palette.surface }, hostelOption: { minHeight: 42, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: palette.line }, hostelOptionSelected: { backgroundColor: palette.softBlue }, hostelOptionTextSelected: { color: palette.blue }, authToggle: { alignItems: 'center', marginTop: 18 }, authFootnote: { color: palette.muted, textAlign: 'center', fontSize: 11, marginTop: 17 },
 });
